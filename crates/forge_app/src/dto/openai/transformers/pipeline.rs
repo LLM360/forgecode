@@ -82,8 +82,9 @@ impl Transformer for ProviderPipeline<'_> {
 
         let xai_compat = MakeXaiCompat.when(move |_| provider.id == ProviderId::XAI);
 
-        let ensure_system_first =
-            MergeSystemMessages.when(move |_| provider.id == ProviderId::NVIDIA);
+        let ensure_system_first = MergeSystemMessages.when(move |_| {
+            provider.id == ProviderId::NVIDIA || provider.id == ProviderId::OPENAI_COMPATIBLE
+        });
 
         let trim_tool_call_ids = TrimToolCallIds.when(move |_| provider.id == ProviderId::OPENAI);
 
