@@ -11,7 +11,7 @@ use crate::changed_files::ChangedFiles;
 use crate::dto::ToolsOverview;
 use crate::hooks::{
     CompactionHandler, DoomLoopDetector, PendingTodosHandler, TitleGenerationHandler,
-    TracingHandler,
+    TraceLoggingHandler, TracingHandler,
 };
 use crate::init_conversation_metrics::InitConversationMetrics;
 use crate::orch::Orchestrator;
@@ -146,6 +146,7 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
 
         // Create the orchestrator with all necessary dependencies
         let tracing_handler = TracingHandler::new();
+        let trace_handler = TraceLoggingHandler::new();
         let title_handler = TitleGenerationHandler::new(services.clone());
 
         // Build the on_end hook, conditionally adding PendingTodosHandler based on
@@ -155,20 +156,35 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
                 .clone()
                 .and(title_handler.clone())
                 .and(PendingTodosHandler::new())
+                .and(trace_handler.clone())
         } else {
-            tracing_handler.clone().and(title_handler.clone())
+            tracing_handler
+                .clone()
+                .and(title_handler.clone())
+                .and(trace_handler.clone())
         };
 
         let hook = Hook::default()
-            .on_start(tracing_handler.clone().and(title_handler))
-            .on_request(tracing_handler.clone().and(DoomLoopDetector::default()))
+            .on_start(
+                tracing_handler
+                    .clone()
+                    .and(title_handler)
+                    .and(trace_handler.clone()),
+            )
+            .on_request(
+                tracing_handler
+                    .clone()
+                    .and(DoomLoopDetector::default())
+                    .and(trace_handler.clone()),
+            )
             .on_response(
                 tracing_handler
                     .clone()
-                    .and(CompactionHandler::new(agent.clone(), environment.clone())),
+                    .and(CompactionHandler::new(agent.clone(), environment.clone()))
+                    .and(trace_handler.clone()),
             )
             .on_toolcall_start(tracing_handler.clone())
-            .on_toolcall_end(tracing_handler)
+            .on_toolcall_end(tracing_handler.and(trace_handler.clone()))
             .on_end(on_end_hook);
 
         let orch = Orchestrator::new(

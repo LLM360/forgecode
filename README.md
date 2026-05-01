@@ -798,6 +798,19 @@ FORGE_HTTP_ROOT_CERT_PATHS=/path/to/cert1.pem,/path/to/cert2.crt  # Paths to roo
 </details>
 
 <details>
+<summary><strong>Trace Logging</strong></summary>
+
+Capture LLM request/response traces as JSONL for fine-tuning data generation:
+
+```bash
+FORGE_TRACE_FILE=/path/to/trace.jsonl forge --prompt "your task here"
+```
+
+This writes an event-log JSONL with one line per event (`session_start`, `context`, `response`, `tool_result`, `session_end`). Each piece of data is stored exactly once — tool outputs and messages are not duplicated across turns. To reconstruct the full conversation for fine-tuning, replay events sequentially: start from the `context` messages, append each `response` as an assistant message, and append each `tool_result` as a tool message. If context compaction occurs mid-session, a `context_reset` event marks the new baseline for reconstruction.
+
+</details>
+
+<details>
 <summary><strong>API Configuration</strong></summary>
 
 Override default API endpoints and provider/model settings:
