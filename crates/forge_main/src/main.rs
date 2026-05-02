@@ -90,8 +90,14 @@ async fn run() -> Result<()> {
     // Initialize and run the UI
     let mut cli = Cli::parse();
 
-    // Check if there's piped input
-    if !std::io::stdin().is_terminal() {
+    // Check if there's piped input.
+    //
+    // Only read stdin when entering the chat path (no subcommand). Reading
+    // stdin blocks until EOF, so under non-interactive automation (e.g.
+    // background processes whose stdin is a non-EOFing pipe), reading would
+    // hang forever. Subcommands like `forge prompt render`, `forge config
+    // get`, etc. don't consume piped input, so we skip the read for them.
+    if cli.subcommands.is_none() && !std::io::stdin().is_terminal() {
         let mut stdin_content = String::new();
         std::io::stdin().read_to_string(&mut stdin_content)?;
         let trimmed_content = stdin_content.trim();

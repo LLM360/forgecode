@@ -46,6 +46,17 @@ pub trait API: Sync + Send {
     /// Executes a chat request and returns a stream of responses
     async fn chat(&self, chat: ChatRequest) -> Result<MpscStream<Result<ChatResponse>>>;
 
+    /// Renders the agent's system prompt without contacting any LLM.
+    ///
+    /// Returns `Ok(None)` when the agent has no `system_prompt` template.
+    /// Otherwise returns `Ok(Some((block1, block2)))` — the same two blocks
+    /// `chat` would feed to `MergeSystemMessages`. Callers that want the
+    /// wire-truth single-string shape should join with `"\n\n"`.
+    async fn render_system_prompt(
+        &self,
+        agent_id: AgentId,
+    ) -> Result<Option<(String, String)>>;
+
     /// Commits changes with an AI-generated commit message
     async fn commit(
         &self,

@@ -41,6 +41,20 @@ pub(crate) fn build_template_config(config: &ForgeConfig) -> forge_domain::Templ
     }
 }
 
+/// Bundle of values produced by [`ForgeApp::build_system_prompt`].
+///
+/// Both `chat` and `render_system_prompt` go through the same builder so
+/// the system message rendered for tracing matches the system message that
+/// would be sent on the wire.
+struct SystemPromptBuild<S> {
+    system_prompt: SystemPrompt<S>,
+    agent: Agent,
+    models: Vec<Model>,
+    tool_definitions: Vec<ToolDefinition>,
+    environment: Environment,
+    forge_config: ForgeConfig,
+}
+
 /// ForgeApp handles the core chat functionality by orchestrating various
 /// services. It encapsulates the complex logic previously contained in the
 /// ForgeAPI chat method.
@@ -70,59 +84,18 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
             .await?
             .ok_or_else(|| forge_domain::Error::ConversationNotFound(chat.conversation_id))?;
 
-        // Discover files using the discovery service
-        let forge_config = self.services.get_config()?;
-        let environment = services.get_environment();
-
-        let files = services.list_current_directory().await?;
-
-        let custom_instructions = services.get_custom_instructions().await;
-
-        // Prepare agents with user configuration
-        let agent_provider_resolver = AgentProviderResolver::new(services.clone());
-
-        // Get agent and apply workflow config
-        let agent = self
-            .services
-            .get_agent(&agent_id)
-            .await?
-            .ok_or(crate::Error::AgentNotFound(agent_id.clone()))?
-            .apply_config(&forge_config)
-            .set_compact_model_if_none();
-
-        let agent_provider = agent_provider_resolver
-            .get_provider(Some(agent.id.clone()))
-            .await?;
-        let agent_provider = self
-            .services
-            .provider_auth_service()
-            .refresh_provider_credential(agent_provider)
-            .await?;
-
-        let models = services.models(agent_provider).await?;
-        let selected_model = models.iter().find(|model| model.id == agent.model);
-        let agent = agent.compaction_threshold(selected_model);
-
-        // Get system and mcp tool definitions and resolve them for the agent
-        let all_tool_definitions = self.tool_registry.list().await?;
-        let tool_resolver = ToolResolver::new(all_tool_definitions);
-        let tool_definitions: Vec<ToolDefinition> =
-            tool_resolver.resolve(&agent).into_iter().cloned().collect();
+        let SystemPromptBuild {
+            system_prompt,
+            agent,
+            models,
+            tool_definitions,
+            environment,
+            forge_config,
+        } = self.build_system_prompt(&agent_id).await?;
         let max_tool_failure_per_turn = agent.max_tool_failure_per_turn.unwrap_or(3);
-
         let current_time = Local::now();
 
-        // Insert system prompt
-        let conversation =
-            SystemPrompt::new(self.services.clone(), environment.clone(), agent.clone())
-                .custom_instructions(custom_instructions.clone())
-                .tool_definitions(tool_definitions.clone())
-                .models(models.clone())
-                .files(files.clone())
-                .max_extensions(forge_config.max_extensions)
-                .template_config(build_template_config(&forge_config))
-                .add_system_message(conversation)
-                .await?;
+        let conversation = system_prompt.add_system_message(conversation).await?;
 
         // Insert user prompt
         let conversation = UserPromptGenerator::new(
@@ -222,6 +195,80 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
         );
 
         Ok(stream)
+    }
+
+    /// Renders the agent's system prompt without contacting any LLM.
+    ///
+    /// Returns `Ok(None)` when the agent has no `system_prompt` template.
+    /// Otherwise returns `Ok(Some((block1, block2)))` — the same two blocks
+    /// that `chat` would feed to `MergeSystemMessages`. Callers that want
+    /// the wire-truth single string should join with `"\n\n"`.
+    pub async fn render_system_prompt(
+        &self,
+        agent_id: AgentId,
+    ) -> Result<Option<(String, String)>> {
+        let build = self.build_system_prompt(&agent_id).await?;
+        build.system_prompt.render_blocks().await
+    }
+
+    /// Builds a fully-configured [`SystemPrompt`] for the given agent.
+    ///
+    /// Centralizes the SystemContext setup so that `chat` (which calls
+    /// `add_system_message`) and `render_system_prompt` (which calls
+    /// `render_blocks`) provably feed the templates from identical inputs.
+    async fn build_system_prompt(&self, agent_id: &AgentId) -> Result<SystemPromptBuild<S>> {
+        let services = self.services.clone();
+        let forge_config = self.services.get_config()?;
+        let environment = services.get_environment();
+
+        let files = services.list_current_directory().await?;
+        let custom_instructions = services.get_custom_instructions().await;
+
+        let agent_provider_resolver = AgentProviderResolver::new(services.clone());
+
+        let agent = self
+            .services
+            .get_agent(agent_id)
+            .await?
+            .ok_or(crate::Error::AgentNotFound(agent_id.clone()))?
+            .apply_config(&forge_config)
+            .set_compact_model_if_none();
+
+        let agent_provider = agent_provider_resolver
+            .get_provider(Some(agent.id.clone()))
+            .await?;
+        let agent_provider = self
+            .services
+            .provider_auth_service()
+            .refresh_provider_credential(agent_provider)
+            .await?;
+
+        let models = services.models(agent_provider).await?;
+        let selected_model = models.iter().find(|model| model.id == agent.model);
+        let agent = agent.compaction_threshold(selected_model);
+
+        let all_tool_definitions = self.tool_registry.list().await?;
+        let tool_resolver = ToolResolver::new(all_tool_definitions);
+        let tool_definitions: Vec<ToolDefinition> =
+            tool_resolver.resolve(&agent).into_iter().cloned().collect();
+
+        let system_prompt =
+            SystemPrompt::new(self.services.clone(), environment.clone(), agent.clone())
+                .custom_instructions(custom_instructions)
+                .tool_definitions(tool_definitions.clone())
+                .models(models.clone())
+                .files(files)
+                .max_extensions(forge_config.max_extensions)
+                .template_config(build_template_config(&forge_config));
+
+        Ok(SystemPromptBuild {
+            system_prompt,
+            agent,
+            models,
+            tool_definitions,
+            environment,
+            forge_config,
+        })
     }
 
     /// Compacts the context of the main agent for the given conversation and

@@ -152,6 +152,39 @@ pub enum TopLevelCommand {
 
     /// Stream forge log output (defaults to the most recent log file).
     Logs(LogsArgs),
+
+    /// Render or inspect the system prompt without contacting any LLM.
+    Prompt(PromptCommandGroup),
+}
+
+/// Command group for system-prompt utilities.
+#[derive(Parser, Debug, Clone)]
+pub struct PromptCommandGroup {
+    #[command(subcommand)]
+    pub command: PromptCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum PromptCommand {
+    /// Print `block1 + "\n\n" + block2` to stdout — the same merged system
+    /// message that `forge run` would feed `MergeSystemMessages` for an
+    /// `openai_compatible` provider in this cwd. Exits 0 on success;
+    /// exits non-zero with a stderr error when the agent has no system
+    /// prompt template.
+    Render {
+        /// Working directory to render against. Defaults to the cwd from
+        /// the top-level `-C/--directory` flag (or the process cwd when
+        /// neither is set). Must match the cwd that the eventual
+        /// `forge -C $DIR -p ...` will use, or the chrome's `<file_list>`
+        /// and `<workspace_extensions>` will not match wire-truth.
+        #[arg(long, short = 'C')]
+        directory: Option<PathBuf>,
+
+        /// Agent ID to render against. Defaults to the active agent (or
+        /// the built-in `forge` when no active agent is set).
+        #[arg(long, alias = "aid")]
+        agent: Option<AgentId>,
+    },
 }
 
 /// Command group for custom command management.

@@ -13,6 +13,7 @@ mod model;
 mod oauth_callback;
 mod porcelain;
 mod prompt;
+mod render_prompt;
 mod sandbox;
 mod state;
 mod stream_renderer;

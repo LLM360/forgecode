@@ -147,6 +147,13 @@ impl<
         self.app().chat(agent_id, chat).await
     }
 
+    async fn render_system_prompt(
+        &self,
+        agent_id: AgentId,
+    ) -> Result<Option<(String, String)>> {
+        self.app().render_system_prompt(agent_id).await
+    }
+
     async fn upsert_conversation(&self, conversation: Conversation) -> anyhow::Result<()> {
         self.services.upsert_conversation(conversation).await
     }

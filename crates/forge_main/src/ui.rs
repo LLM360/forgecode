@@ -742,6 +742,21 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                 crate::logs::run(args, log_dir).await?;
                 return Ok(());
             }
+            TopLevelCommand::Prompt(prompt_group) => {
+                match prompt_group.command {
+                    crate::cli::PromptCommand::Render { directory, agent } => {
+                        let default_cwd = self.api.environment().cwd.clone();
+                        crate::render_prompt::run(
+                            directory,
+                            agent,
+                            self.config.clone(),
+                            default_cwd,
+                        )
+                        .await?;
+                    }
+                }
+                return Ok(());
+            }
         }
         Ok(())
     }
