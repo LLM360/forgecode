@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use derive_setters::Setters;
 use forge_domain::{
     Agent, Conversation, Environment, Extension, ExtensionStat, File, Model, SystemContext,
@@ -70,75 +71,107 @@ impl<S: SkillFetchService + ShellService> SystemPrompt<S> {
         mut conversation: Conversation,
     ) -> anyhow::Result<Conversation> {
         let context = conversation.context.take().unwrap_or_default();
-        let agent = &self.agent;
-        let context = if let Some(system_prompt) = &agent.system_prompt {
-            let env = self.environment.clone();
-            let files = self.files.clone();
 
-            let tool_supported = self.is_tool_supported()?;
-            let supports_parallel_tool_calls = self.is_parallel_tool_call_supported();
-            let tool_information = match tool_supported {
-                true => None,
-                false => Some(ToolUsagePrompt::from(&self.tool_definitions).to_string()),
-            };
+        // FORGE_SYSTEM_PROMPT_FILE bypasses the Block 1 + Block 2 render pipeline
+        // entirely and injects the file's contents as the sole system message.
+        // Empty string is treated as unset so callers can clear the override
+        // without unsetting the variable.
+        if let Some(path) = std::env::var("FORGE_SYSTEM_PROMPT_FILE")
+            .ok()
+            .filter(|s| !s.is_empty())
+        {
+            let content = tokio::fs::read_to_string(&path)
+                .await
+                .with_context(|| format!("reading FORGE_SYSTEM_PROMPT_FILE={path}"))?;
+            return Ok(conversation.context(context.set_system_messages(vec![content])));
+        }
 
-            let mut custom_rules = Vec::new();
-
-            agent.custom_rules.iter().for_each(|rule| {
-                custom_rules.push(rule.as_str());
-            });
-
-            self.custom_instructions.iter().for_each(|rule| {
-                custom_rules.push(rule.as_str());
-            });
-
-            let skills = self.services.list_skills().await?;
-
-            // Fetch extension statistics from git
-            let extensions = self.fetch_extensions(self.max_extensions).await;
-
-            // Build tool_names map filtered to only the tools this agent actually has.
-            // This allows templates to use {{#if tool_names.task}} to conditionally
-            // render content based on whether the agent has access to a given tool.
-            let agent_tool_names: std::collections::HashSet<String> = self
-                .tool_definitions
-                .iter()
-                .map(|def| def.name.to_string())
-                .collect();
-            let tool_names: Map<String, Value> = ToolCatalog::iter()
-                .map(|tool| {
-                    let def = tool.definition();
-                    (def.name.to_string(), json!(def.name.to_string()))
-                })
-                .filter(|(name, _)| agent_tool_names.contains(name))
-                .collect();
-
-            let ctx = SystemContext {
-                env: Some(env),
-                tool_information,
-                tool_supported,
-                files,
-                custom_rules: custom_rules.join("\n\n"),
-                supports_parallel_tool_calls,
-                skills,
-                model: None,
-                tool_names,
-                extensions,
-                agents: vec![],
-                config: None,
-            };
-
-            let static_block = TemplateEngine::default()
-                .render_template(Template::new(&system_prompt.template), &ctx)?;
-            let non_static_block = TemplateEngine::default()
-                .render_template(Template::new("{{> forge-custom-agent-template.md }}"), &ctx)?;
-
-            context.set_system_messages(vec![static_block, non_static_block])
-        } else {
-            context
+        let context = match self.render_blocks().await? {
+            Some((static_block, non_static_block)) => {
+                context.set_system_messages(vec![static_block, non_static_block])
+            }
+            None => context,
         };
 
         Ok(conversation.context(context))
+    }
+
+    /// Renders the agent's system prompt into its two component blocks
+    /// without mutating any conversation state.
+    ///
+    /// Returns `Ok(None)` when the agent has no `system_prompt` template
+    /// (matching the legacy no-op branch of `add_system_message`). Returns
+    /// `Ok(Some((block1, block2)))` otherwise; callers that want the wire
+    /// shape should join with `"\n\n"`, matching what `MergeSystemMessages`
+    /// produces for `OPENAI_COMPATIBLE` providers.
+    pub async fn render_blocks(&self) -> anyhow::Result<Option<(String, String)>> {
+        let agent = &self.agent;
+        let Some(system_prompt) = &agent.system_prompt else {
+            return Ok(None);
+        };
+
+        let env = self.environment.clone();
+        let files = self.files.clone();
+
+        let tool_supported = self.is_tool_supported()?;
+        let supports_parallel_tool_calls = self.is_parallel_tool_call_supported();
+        let tool_information = match tool_supported {
+            true => None,
+            false => Some(ToolUsagePrompt::from(&self.tool_definitions).to_string()),
+        };
+
+        let mut custom_rules = Vec::new();
+
+        agent.custom_rules.iter().for_each(|rule| {
+            custom_rules.push(rule.as_str());
+        });
+
+        self.custom_instructions.iter().for_each(|rule| {
+            custom_rules.push(rule.as_str());
+        });
+
+        let skills = self.services.list_skills().await?;
+
+        // Fetch extension statistics from git
+        let extensions = self.fetch_extensions(self.max_extensions).await;
+
+        // Build tool_names map filtered to only the tools this agent actually has.
+        // This allows templates to use {{#if tool_names.task}} to conditionally
+        // render content based on whether the agent has access to a given tool.
+        let agent_tool_names: std::collections::HashSet<String> = self
+            .tool_definitions
+            .iter()
+            .map(|def| def.name.to_string())
+            .collect();
+        let tool_names: Map<String, Value> = ToolCatalog::iter()
+            .map(|tool| {
+                let def = tool.definition();
+                (def.name.to_string(), json!(def.name.to_string()))
+            })
+            .filter(|(name, _)| agent_tool_names.contains(name))
+            .collect();
+
+        let ctx = SystemContext {
+            env: Some(env),
+            tool_information,
+            tool_supported,
+            files,
+            custom_rules: custom_rules.join("\n\n"),
+            supports_parallel_tool_calls,
+            skills,
+            model: None,
+            tool_names,
+            extensions,
+            agents: vec![],
+            config: None,
+        };
+
+        let static_block = TemplateEngine::default()
+            .render_template(Template::new(&system_prompt.template), &ctx)?;
+        let non_static_block = TemplateEngine::default()
+            .render_template(Template::new("{{> forge-custom-agent-template.md }}"), &ctx)?;
+
+        Ok(Some((static_block, non_static_block)))
     }
 
     // Returns if agent supports tool or not.
