@@ -147,8 +147,7 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
             .on_request(
                 tracing_handler
                     .clone()
-                    .and(DoomLoopDetector::default())
-                    .and(trace_handler.clone()),
+                    .and(DoomLoopDetector::default()),
             )
             .on_response(
                 tracing_handler
@@ -169,6 +168,7 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
         .error_tracker(ToolErrorTracker::new(max_tool_failure_per_turn))
         .tool_definitions(tool_definitions)
         .models(models)
+        .trace_handler(Some(Arc::new(trace_handler.clone())))
         .hook(Arc::new(hook));
 
         // Create and return the stream

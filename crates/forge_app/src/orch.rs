@@ -26,6 +26,7 @@ pub struct Orchestrator<S> {
     error_tracker: ToolErrorTracker,
     hook: Arc<Hook>,
     config: forge_config::ForgeConfig,
+    trace_handler: Option<Arc<crate::hooks::TraceLoggingHandler>>,
 }
 
 impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orchestrator<S> {
@@ -45,6 +46,7 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
             models: Default::default(),
             error_tracker: Default::default(),
             hook: Arc::new(Hook::default()),
+            trace_handler: None,
         }
     }
 
@@ -198,6 +200,7 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
         model_id: &ModelId,
         context: Context,
         reasoning_supported: bool,
+        request_count: usize,
     ) -> anyhow::Result<ChatCompletionMessageFull> {
         let tool_supported = self.is_tool_supported()?;
         let mut transformers = DefaultTransformation::default()
@@ -221,13 +224,23 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                 DropReasoningOnlyMessages
                     .when(|_| model_id.as_str().to_lowercase().contains("claude")),
             );
+
+        let transformed = transformers.transform(context);
+
+        if let Some(trace) = &self.trace_handler {
+            trace
+                .write_request_event(
+                    &transformed,
+                    &self.agent.provider,
+                    model_id,
+                    request_count + 1,
+                )
+                .await;
+        }
+
         let response = self
             .services
-            .chat_agent(
-                model_id,
-                transformers.transform(context),
-                Some(self.agent.provider.clone()),
-            )
+            .chat_agent(model_id, transformed, Some(self.agent.provider.clone()))
             .await?;
 
         // Always stream content deltas
@@ -286,6 +299,7 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                         &model_id,
                         context.clone(),
                         context.is_reasoning_supported(),
+                        request_count,
                     )
                 },
                 self.sender.as_ref().map(|sender| {
