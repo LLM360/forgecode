@@ -31,6 +31,11 @@ impl TraceLoggingHandler {
             .ok()
             .filter(|s| !s.is_empty())
             .map(PathBuf::from);
+        if let Some(path) = &trace_file {
+            if let Err(e) = std::fs::File::create(path) {
+                warn!(error = %e, path = %path.display(), "Failed to truncate trace file");
+            }
+        }
         Self {
             trace_file,
             state: Arc::new(Mutex::new(TraceState { turn: 0, started_at: None })),
